@@ -29,7 +29,6 @@ This is the workflow for creating binary viewsheds. I have split it into two man
 7. Isolate the Kanektok shape on the ‘shapefiletemp’ vectorized image  
    1. Map, select, hold shift and click on water, continue until all river is highlighted  
    2. After selected, right click the vector layer, data, export features, export selected records only, title it “IRS\_\*year\*” (which stands for isolated river shapefile) or similar.  
-   3. Also select all the features of the binary vector and export to new layer, then combine them all using edit, and merge[^1]. Save. This will be our “StudyArea” shapefile.  
 8. Make the grid\!  
    1. Geoprocessing tool called Create Fishnet[^2].  
    2. Output name “grid2022”  
