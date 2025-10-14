@@ -1,4 +1,3 @@
-[Binary thresholding workflow (1).md](https://github.com/user-attachments/files/22906181/Binary.thresholding.workflow.1.md)
 **CIVIC Binary Thresholding Workflow**
 
 This is the workflow for creating binary viewsheds. I have split it into two manual sections and two automated sections.
