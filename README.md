@@ -2,7 +2,7 @@
 
 This is the workflow for creating binary viewsheds. I have split it into two manual sections and two automated sections.
 
-*Manual*
+*Section 1: Manual*
 
 1. Create a new project in ArcGIS Pro.  
 2. Download the imagery from the ArcGIS Online group. At the moment I have it set up as a map package but I might change that later  
@@ -16,7 +16,7 @@ This is the workflow for creating binary viewsheds. I have split it into two man
    1. Right click on extracted layer in the contents pane to the left→symbology→Change primary symbology to classify→Classes to 2, play with the lower number of the upper values.   
    2. We want water feature to be within 1 pixel of water (30m)
 
-*Automated*
+*Section 2: Automated*
 
 6. Open the “Binary Raster Automated Sections.ipynb” script from the catalog pane to the right. Right click on it→ open. **Refer to Module 1**, fill in the relevant details in Parts 1-3 and run the first cell only:  
    1. Adjust directory, make file for binary output  
@@ -24,7 +24,7 @@ This is the workflow for creating binary viewsheds. I have split it into two man
    3. Make sure band set to near infrared  
    4. This will output an initial binary raster called “shapefiletemp’ and a StudyArea file (Previously known as the “blob”)
 
-*Manual*
+*Section 3: Manual*
 
 7. Isolate the Kanektok shape on the ‘shapefiletemp’ vectorized image  
    1. Map, select, hold shift and click on water, continue until all river is highlighted  
@@ -42,7 +42,7 @@ This is the workflow for creating binary viewsheds. I have split it into two man
    2. If you want to remove polygons, use the edit, then split feature. Then split off the section you want to delete then select and delete it.  
    3. After you are happy with your river polygons, merge them all into one polygon using the Dissolve[^3] geoprocessing tool, under View→ Geoprocessing→ search for dissolve
 
-*Automated*
+*Section 4: Automated*
 
 10. Run Module 2 only, of the automated workflow. This will generate the final products. In this module, fill in parts 1-3 to direct the script to the dissolved IRS.
 
