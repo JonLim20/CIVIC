@@ -1,6 +1,6 @@
 **CIVIC Binary Thresholding Workflow**
 
-This is the workflow for creating binary viewsheds. I have split it into two manual sections and two automated sections.
+This is the workflow for creating river planform binary rasters. I have split it into two manual sections and two automated sections.
 
 *Section 1: Manual*
 
