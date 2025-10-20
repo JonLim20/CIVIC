@@ -9,7 +9,7 @@ This is the workflow for creating river planform binary rasters in ArcGIS Pro. I
    1. Select image, correctly assign bands and adjust contrast  
    2. Make sure crs of project is in WGS 1984 (A geographic coordinate reference system which is native to the imagery  
    3. Save it into your project folder, normall in My Documents→ ArcGIS→Projects→ \*Name\*. It can be opened within arcgis pro’s catalog pane, or simply drag it into an open map to load it.  
-3. Download the Binary Raster Automated Sections.ipynb from GitHub. Place it in the project folder as stated in section 1c) above  
+3. Download the Binary Raster Automated Sections.ipynb from GitHub. Place it in the project folder as stated in section 2c) above  
 4. Isolate the near infrared band to make new layer. This is the only way to allow you to adjust the symbology using the Classified option.  
    1.  Select the image in the contents pane→ Imagery tab→ Raster functions→ search the raster function window for Extract Bands→ Select the raster in the drop down menu under “Raster”. State the single band in question in the “Combination” box→ “Create new layer”  
 5. Initial thresholding to create binary image, representing water and land  
