@@ -1,0 +1,75 @@
+// Paste into Google Earth Engine to download LANDSAT8 Imagery
+// QA_PIXEL band (CFMask) to mask unwanted pixels.
+
+function maskL8sr(image) {
+  // Bit 0 - Fill
+  // Bit 1 - Dilated Cloud
+  // Bit 2 - Cirrus
+  // Bit 3 - Cloud
+  // Bit 4 - Cloud Shadow
+  var qaMask = image.select('QA_PIXEL').bitwiseAnd(parseInt('11111', 2)).eq(0);
+  var saturationMask = image.select('QA_RADSAT').eq(0);
+
+  // Apply the scaling factors to the appropriate bands.
+  var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0);
+
+  // Replace the original bands with the scaled ones and apply the masks.
+  return image.addBands(opticalBands, null, true)
+      .addBands(thermalBands, null, true)
+      .updateMask(qaMask)
+      .updateMask(saturationMask);
+}
+
+// Map the function over one year of data. Link: https://developers.google.com/earth-engine/datasets/catalog/LANDSAT_LC08_C02_T1_L2
+var collection = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+                     .filterDate('2024-5-01', '2024-12-30')
+                     .map(maskL8sr);
+
+var composite = collection.median();
+
+// Display the results as an RGB composite.
+Map.setCenter(-161.90402886481778,59.750359237437635, 11);  // Aral Sea
+Map.addLayer(composite, {bands: ['SR_B4', 'SR_B3', 'SR_B2'], min: 0, max: 0.3}, 'RGB');
+
+// Calculate MNDWI and display the results
+
+var MNDWI = composite.normalizedDifference(['SR_B3', 'SR_B6']);
+Map.addLayer(MNDWI, {palette: ['white', 'blue']}, 'MNDWI');
+
+// Clip the RGB composite images to the specified region.
+var clippedComposite = composite.clip(geometry);
+var MNDWIclippedComposite = MNDWI.clip(geometry);
+
+// Display the clipped composite.
+//Map.addLayer(clippedComposite, {bands: ['SR_B4', 'SR_B3', 'SR_B2'], min: 0, max: 0.3}, 'Clipped Composite');
+
+// Define the export parameters. CONTROL BANDS BEING EXPORTED HERE
+var RGBexportParams = {
+  image: clippedComposite.select(['SR_B1', 'SR_B2', 'SR_B3','SR_B4', 'SR_B5', 'SR_B6','SR_B7']),
+  description: 'RGB',
+  scale: 30, // set the scale in meters
+  region: geometry,
+  fileFormat: 'GeoTIFF', // choose the desired file format
+};
+
+// Export the clipped composite to Google Drive.
+Export.image.toDrive(RGBexportParams);
+
+// Clip the MDNWI composite images to the specified region.
+var MNDWIclippedComposite = MNDWI.clip(geometry);
+
+// Define the export parameters.
+var MNDWIexportParams = {
+  image: MNDWIclippedComposite,
+  description: 'MNDWI',
+  scale: 100, // set the scale in meters
+  region: geometry,
+  fileFormat: 'GeoTIFF', // choose the desired file format
+};
+
+// Export the clipped composite to Google Drive.
+Export.image.toDrive(MNDWIexportParams);
+
+// Unselect MNDWI layer by default
+Map.layers().get(1).setShown(false);
