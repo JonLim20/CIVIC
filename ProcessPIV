@@ -1,4 +1,4 @@
-% Postprocess 4+ PIVlab realizations for a single Landsat binary pair.
+% Postprocess 4+ PIVlab realizations for a single Landsat binary pair. Please see https://uageos.maps.arcgis.com/home/group.html?id=e0ce8714edb74442912f370d2a776959#overview for instructions on use
 %
 % FIXED VERSION
 %   - Assumes PIV x/y grid is already in METRES from the upper-left origin
