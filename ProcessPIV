@@ -1,0 +1,640 @@
+% Postprocess 4+ PIVlab realizations for a single Landsat binary pair.
+%
+% FIXED VERSION
+%   - Assumes PIV x/y grid is already in METRES from the upper-left origin
+%   - Removes erroneous *1000 map conversion
+%   - Exports shapefile with true vector lengths by default
+%   - Keeps georeferenced outputs, uncertainty filtering, and figures
+%
+% INPUT ASSUMPTION
+%   Based on your sample MAT, x and y are already in metres.
+%   Therefore georeferencing is:
+%
+%       Xmap = C + X
+%       Ymap = F - Y
+%
+%   where C,F come from the world file (.tfw), and X,Y are already metres
+%   from the upper-left image origin.
+%
+% NOTES
+%   - shp_scale_factor = 1.0 means exported lines are true map length
+%   - If you want display exaggeration only, increase shp_scale_factor
+%     after confirming the vectors align correctly
+%
+% Jonathan's fixed version
+
+clear; clc;
+
+%% ---------------- USER SETTINGS ----------------
+% Folder containing r1.mat ... r4.mat (or more)
+piv_mat_dir  = "W:\PIV\application\pivmulti\aggregation1\a2020_2024";
+file_pattern = "r*.mat";
+
+% Choose vector field from PIVlab MATs
+%   "original"  -> u_original / v_original
+%   "smoothed"  -> u_smoothed / v_smoothed
+field_choice = "original";
+
+% Output folder
+out_dir = "W:\PIV\application\pivmulti\aggregation1\a2020_2024\results";
+
+% Base name for exported shapefile
+shp_basename = "a2020_2024";
+
+% Reference geospatial files
+tfw_file = "C:\Users\jon20\Desktop\area\New Folder (2)\geotiff.tfw";
+prj_file = "C:\Users\jon20\Desktop\area\area.prj";
+
+% Convert m/s to m/yr for exported vector values and plots
+export_in_m_per_year = true;
+sec_per_year = 31556952;
+
+% Filtering settings
+min_Nobs = 3;                 % for 4 realizations, require at least 3
+dir_uncert_max_deg = 45;      % reject if angular spread too large
+use_sigma_mag_filter = true;  % reject if SigmaMag >= MagMean
+use_ratio_mag_filter = false; % alternative ratio filter
+sigma_mag_ratio_max = 1.0;    % only used if use_ratio_mag_filter = true
+
+use_min_mag_filter = false;
+mag_min_mps = 0.0;
+
+% Shapefile vector display scaling
+% IMPORTANT:
+%   1.0 = true map length in output units (recommended for debugging)
+%   Increase only if you want visual exaggeration
+shp_scale_factor = 1.0;
+
+% Figures
+make_figures = true;
+figdir = fullfile(out_dir, "figures");
+quiver_decim = 1;
+quiver_scale = 10;  % 0 = plot true magnitudes
+bg_aspect_equal = true;
+
+%% ---------------- SETUP ------------------------
+if ~exist(out_dir, 'dir')
+    mkdir(out_dir);
+end
+
+if make_figures && ~exist(figdir, 'dir')
+    mkdir(figdir);
+end
+
+files = dir(fullfile(piv_mat_dir, file_pattern));
+if isempty(files)
+    error("No MAT files found. Check piv_mat_dir and file_pattern.");
+end
+
+[~, idx] = sort({files.name});
+files = files(idx);
+Nreal = numel(files);
+
+fprintf("Found %d realizations:\n", Nreal);
+for i = 1:Nreal
+    fprintf("  %s\n", files(i).name);
+end
+
+if Nreal < 2
+    error("Need at least 2 realizations to compute uncertainty.");
+end
+
+%% ---------------- LOAD REALIZATIONS -----------
+P = cell(Nreal,1);
+
+for i = 1:Nreal
+    fp = fullfile(files(i).folder, files(i).name);
+    fprintf("Loading %d/%d: %s\n", i, Nreal, files(i).name);
+    P{i} = load_one_pivmat(fp, field_choice);
+end
+
+% Reference grid from first realization
+X = P{1}.X;
+Y = P{1}.Y;
+
+if isempty(X) || isempty(Y)
+    error("Reference realization has empty x/y grid.");
+end
+
+disp('--- DIAGNOSTIC: PIV GRID ---')
+disp(['Size of X: ', mat2str(size(X))])
+disp(['Size of Y: ', mat2str(size(Y))])
+disp(['X min/max: ', num2str(min(X(:))), ' / ', num2str(max(X(:)))])
+disp(['Y min/max: ', num2str(min(Y(:))), ' / ', num2str(max(Y(:)))])
+disp('First 10 X values from row 1:')
+disp(X(1,1:min(10,end)))
+disp('First 10 Y values from col 1:')
+disp(Y(1:min(10,end),1))
+
+[ny, nx] = size(X);
+
+% Preallocate
+U = nan(ny, nx, Nreal);
+V = nan(ny, nx, Nreal);
+
+%% ---------------- STACK REALIZATIONS ----------
+for i = 1:Nreal
+    Ui = P{i}.U;
+    Vi = P{i}.V;
+
+    if isempty(Ui) || isempty(Vi)
+        warning("Realization %d (%s) has empty U/V. Skipping.", i, files(i).name);
+        continue;
+    end
+
+    if ~isequal(size(Ui), [ny, nx]) || ~isequal(size(Vi), [ny, nx])
+        warning("Size mismatch in %s. Interpolating onto reference grid.", files(i).name);
+        [Ui, Vi] = interp_uv_to_grid(P{i}.X, P{i}.Y, Ui, Vi, X, Y);
+    end
+
+    U(:,:,i) = Ui;
+    V(:,:,i) = Vi;
+end
+
+% Drop all-NaN realizations
+keep = squeeze(any(any(isfinite(U),1),2));
+U = U(:,:,keep);
+V = V(:,:,keep);
+files = files(keep);
+Nreal = size(U,3);
+
+fprintf("Proceeding with %d non-empty realizations.\n", Nreal);
+
+if Nreal < 2
+    error("After removing empty realizations, fewer than 2 remain.");
+end
+
+%% ---------------- MEAN + UNCERTAINTY ----------
+[Umean, Vmean, MagMean, SigmaMag, SigmaDirDeg, Nobs] = ...
+    mean_uncertainty_vectors_optionA(U, V);
+
+%% ---------------- FILTERING -------------------
+bad = false(ny, nx);
+
+% (1) Require enough realizations
+bad = bad | (Nobs < min_Nobs);
+
+% (2) Direction uncertainty too large
+bad = bad | (SigmaDirDeg > dir_uncert_max_deg);
+
+% (3) Magnitude uncertainty
+if use_sigma_mag_filter && ~use_ratio_mag_filter
+    bad = bad | (SigmaMag >= MagMean);
+elseif use_ratio_mag_filter
+    bad = bad | ((SigmaMag ./ (MagMean + eps)) > sigma_mag_ratio_max);
+end
+
+% (4) Optional minimum magnitude threshold
+if use_min_mag_filter
+    bad = bad | (MagMean < mag_min_mps);
+end
+
+Umean_f = Umean;
+Vmean_f = Vmean;
+Umean_f(bad) = NaN;
+Vmean_f(bad) = NaN;
+
+%% ---------------- UNIT CONVERSION -------------
+if export_in_m_per_year
+    Umean_out   = Umean   * sec_per_year;
+    Vmean_out   = Vmean   * sec_per_year;
+    Umean_f_out = Umean_f * sec_per_year;
+    Vmean_f_out = Vmean_f * sec_per_year;
+    units_out = "m/yr";
+else
+    Umean_out   = Umean;
+    Vmean_out   = Vmean;
+    Umean_f_out = Umean_f;
+    Vmean_f_out = Vmean_f;
+    units_out = "m/s";
+end
+
+Umean_out   = double(Umean_out);
+Vmean_out   = double(Vmean_out);
+Umean_f_out = double(Umean_f_out);
+Vmean_f_out = double(Vmean_f_out);
+
+%% ---------------- GEOREFERENCE GRID ----------
+GeoRef = read_tfw_worldfile(tfw_file);
+disp('--- DIAGNOSTIC: WORLD FILE ---')
+disp(GeoRef)
+
+% FIXED: X and Y are already in metres, so do NOT multiply by 1000
+[Xmap, Ymap] = piv_grid_to_map_coords_meters(X, Y, GeoRef);
+Xmap = double(Xmap);
+Ymap = double(Ymap);
+
+disp('--- DIAGNOSTIC: MAP COORDS ---')
+disp(['Xmap min/max: ', num2str(min(Xmap(:))), ' / ', num2str(max(Xmap(:)))])
+disp(['Ymap min/max: ', num2str(min(Ymap(:))), ' / ', num2str(max(Ymap(:)))])
+
+%% ---------------- SAVE OUTPUT (.MAT) ----------
+Post = struct();
+Post.X = X;
+Post.Y = Y;
+
+% Map coordinates
+Post.Xmap = Xmap;
+Post.Ymap = Ymap;
+
+% Mean vectors (chosen output units)
+Post.Umean = Umean_out;
+Post.Vmean = Vmean_out;
+Post.Umean_f = Umean_f_out;
+Post.Vmean_f = Vmean_f_out;
+
+% Uncertainty in original PIV units
+Post.MagMean = double(MagMean);          % m/s
+Post.SigmaMag = double(SigmaMag);        % m/s
+Post.SigmaDirDeg = double(SigmaDirDeg);  % degrees
+Post.Nobs = double(Nobs);
+Post.bad = logical(bad);
+
+Post.units = units_out;
+Post.realizations_used = {files.name};
+Post.export_in_m_per_year = export_in_m_per_year;
+Post.sec_per_year = sec_per_year;
+
+% Georeferencing metadata
+Post.tfw_file = tfw_file;
+Post.prj_file = prj_file;
+Post.georef = GeoRef;
+Post.xy_grid_units = "meters_from_upper_left_origin";
+
+mat_out = fullfile(out_dir, "Postprocessed_LandsatPair_georef_fixed.mat");
+save(mat_out, "Post", "-v7.3");
+fprintf("Saved MAT: %s\n", mat_out);
+
+%% ---------------- EXPORT SHAPEFILE ------------
+shp_out_base = fullfile(out_dir, shp_basename);
+export_vectors_shapefile_georef(Post, shp_out_base, shp_scale_factor, prj_file);
+fprintf("Saved georeferenced shapefile: %s.shp\n", shp_out_base);
+
+%% ---------------- STEP 7 VISUALIZATIONS -------
+if make_figures
+    rr = 1:quiver_decim:ny;
+    cc = 1:quiver_decim:nx;
+
+    % ---- (A) Raw vectors: realization 1 ----
+    Ui = U(:,:,1);
+    Vi = V(:,:,1);
+
+    if export_in_m_per_year
+        Ui_plot = double(Ui) * sec_per_year;
+        Vi_plot = double(Vi) * sec_per_year;
+    else
+        Ui_plot = double(Ui);
+        Vi_plot = double(Vi);
+    end
+
+    f1 = figure('Name','Raw vectors (Realization 1)','Color','w');
+    quiver(Xmap(rr,cc), Ymap(rr,cc), Ui_plot(rr,cc), Vi_plot(rr,cc), quiver_scale);
+    title(sprintf("Raw vectors (Realization 1) [%s]", units_out));
+    xlabel("X (map)");
+    ylabel("Y (map)");
+    if bg_aspect_equal, axis equal; end
+    axis tight;
+    saveas(f1, fullfile(figdir, "A_raw_vectors_realization1.png"));
+
+    % ---- (B) Mean vectors (unfiltered) ----
+    f2 = figure('Name','Mean vectors (unfiltered)','Color','w');
+    quiver(Xmap(rr,cc), Ymap(rr,cc), Umean_out(rr,cc), Vmean_out(rr,cc), quiver_scale);
+    title(sprintf("Mean vectors (unfiltered) [%s]", units_out));
+    xlabel("X (map)");
+    ylabel("Y (map)");
+    if bg_aspect_equal, axis equal; end
+    axis tight;
+    saveas(f2, fullfile(figdir, "B_mean_vectors_unfiltered.png"));
+
+    % ---- (C) Mean vectors (filtered) ----
+    f3 = figure('Name','Mean vectors (filtered)','Color','w');
+    quiver(Xmap(rr,cc), Ymap(rr,cc), Umean_f_out(rr,cc), Vmean_f_out(rr,cc), quiver_scale);
+    title(sprintf("Mean vectors (filtered) [%s]", units_out));
+    xlabel("X (map)");
+    ylabel("Y (map)");
+    if bg_aspect_equal, axis equal; end
+    axis tight;
+    saveas(f3, fullfile(figdir, "C_mean_vectors_filtered.png"));
+
+    % ---- (D) Uncertainty + QA maps ----
+    f4 = figure('Name','Uncertainty maps','Color','w');
+    tiledlayout(2,2,'Padding','compact','TileSpacing','compact');
+
+    nexttile;
+    imagesc(Xmap(1,:), Ymap(:,1), SigmaMag);
+    axis image; set(gca,'YDir','normal');
+    title('\sigma_{mag} (m/s)');
+    xlabel("X (map)"); ylabel("Y (map)");
+    colorbar;
+
+    nexttile;
+    imagesc(Xmap(1,:), Ymap(:,1), SigmaDirDeg);
+    axis image; set(gca,'YDir','normal');
+    title('\sigma_{dir} (deg)');
+    xlabel("X (map)"); ylabel("Y (map)");
+    colorbar;
+
+    nexttile;
+    imagesc(Xmap(1,:), Ymap(:,1), Nobs);
+    axis image; set(gca,'YDir','normal');
+    title('Nobs');
+    xlabel("X (map)"); ylabel("Y (map)");
+    colorbar;
+
+    nexttile;
+    imagesc(Xmap(1,:), Ymap(:,1), bad);
+    axis image; set(gca,'YDir','normal');
+    title('Bad mask (filtered out)');
+    xlabel("X (map)"); ylabel("Y (map)");
+    colorbar;
+
+    saveas(f4, fullfile(figdir, "D_uncertainty_maps.png"));
+    fprintf("Saved figures to: %s\n", figdir);
+end
+
+%% ---------------- QUICK PLOT ------------------
+figure('Color','w');
+quiver(Xmap, Ymap, Umean_f_out, Vmean_f_out, 0);
+axis equal tight;
+title("Filtered mean vectors (georeferenced)");
+xlabel("X (map)");
+ylabel("Y (map)");
+
+end
+
+
+%% ================= HELPER FUNCTIONS =================
+
+function S = load_one_pivmat(fp, field_choice)
+d = load(fp);
+
+S.X = unwrap_any(d, "x");
+S.Y = unwrap_any(d, "y");
+
+switch lower(field_choice)
+    case "original"
+        S.U = unwrap_any(d, "u_original");
+        S.V = unwrap_any(d, "v_original");
+    case "smoothed"
+        S.U = unwrap_any(d, "u_smoothed");
+        S.V = unwrap_any(d, "v_smoothed");
+    otherwise
+        error("field_choice must be 'original' or 'smoothed'.");
+end
+
+if isempty(S.U) || isempty(S.V)
+    S.U = [];
+    S.V = [];
+end
+end
+
+
+function A = unwrap_any(d, fname)
+if ~isfield(d, fname)
+    error("Missing field '%s' in mat file.", fname);
+end
+
+obj = d.(fname);
+
+if isempty(obj)
+    A = [];
+    return;
+end
+
+if isnumeric(obj)
+    A = obj;
+    return;
+end
+
+if iscell(obj)
+    for k = 1:numel(obj)
+        if ~isempty(obj{k})
+            A = obj{k};
+            return;
+        end
+    end
+    A = [];
+    return;
+end
+
+error("Unexpected type for '%s'.", fname);
+end
+
+
+function [Ui, Vi] = interp_uv_to_grid(Xi, Yi, Ui, Vi, Xref, Yref)
+% Interpolate onto reference grid using nearest neighbor.
+try
+    Fu = griddedInterpolant(Yi, Xi, Ui, "nearest", "none");
+    Fv = griddedInterpolant(Yi, Xi, Vi, "nearest", "none");
+    Ui = Fu(Yref, Xref);
+    Vi = Fv(Yref, Xref);
+catch
+    Fu = scatteredInterpolant(Xi(:), Yi(:), Ui(:), "nearest", "none");
+    Fv = scatteredInterpolant(Xi(:), Yi(:), Vi(:), "nearest", "none");
+    Ui = Fu(Xref, Yref);
+    Vi = Fv(Xref, Yref);
+end
+end
+
+
+function [Umean, Vmean, MagMean, SigmaMag, SigmaDirDeg, Nobs] = mean_uncertainty_vectors_optionA(U, V)
+% Option A:
+%   Umean = mean(u)
+%   Vmean = mean(v)
+%   MagMean = hypot(Umean, Vmean)
+%   SigmaMag = std(hypot(u,v))
+%   SigmaDirDeg = RMS angular spread around mean direction
+
+[ny, nx, ~] = size(U);
+
+Umean = nan(ny, nx);
+Vmean = nan(ny, nx);
+MagMean = nan(ny, nx);
+SigmaMag = nan(ny, nx);
+SigmaDirDeg = nan(ny, nx);
+Nobs = zeros(ny, nx);
+
+for r = 1:ny
+    for c = 1:nx
+        u = squeeze(U(r,c,:));
+        v = squeeze(V(r,c,:));
+
+        ok = isfinite(u) & isfinite(v);
+        u = double(u(ok));
+        v = double(v(ok));
+
+        n = numel(u);
+        Nobs(r,c) = n;
+
+        if n == 0
+            continue;
+        end
+
+        um = mean(u);
+        vm = mean(v);
+
+        Umean(r,c) = um;
+        Vmean(r,c) = vm;
+        MagMean(r,c) = hypot(um, vm);
+
+        mags = hypot(u, v);
+        if n > 1
+            SigmaMag(r,c) = std(mags, 0);
+        else
+            SigmaMag(r,c) = 0;
+        end
+
+        theta_mean = atan2(vm, um);
+        theta = atan2(v, u);
+        dtheta = angle(exp(1i * (theta - theta_mean))); % wrapped difference in radians
+
+        if n > 1
+            SigmaDirDeg(r,c) = rad2deg(sqrt(mean(dtheta.^2)));
+        else
+            SigmaDirDeg(r,c) = 0;
+        end
+    end
+end
+end
+
+
+function GeoRef = read_tfw_worldfile(tfw_file)
+% Read 6-line world file (.tfw, .jgw, .pgw, etc.)
+% Order:
+%   1 A  pixel size in X
+%   2 D  rotation term
+%   3 B  rotation term
+%   4 E  pixel size in Y (usually negative)
+%   5 C  X coordinate of center of upper-left pixel
+%   6 F  Y coordinate of center of upper-left pixel
+
+if ~isfile(tfw_file)
+    error("World file not found: %s", tfw_file);
+end
+
+fid = fopen(tfw_file, 'rt');
+if fid == -1
+    error("Could not open world file: %s", tfw_file);
+end
+
+cleanupObj = onCleanup(@() fclose(fid)); %#ok<NASGU>
+
+vals = textscan(fid, '%f', 'Delimiter', {' ', '\t', '\n', '\r'});
+vals = vals{1};
+
+if numel(vals) ~= 6
+    error("World file must contain exactly 6 numeric values: %s", tfw_file);
+end
+
+GeoRef.A = double(vals(1));
+GeoRef.D = double(vals(2));
+GeoRef.B = double(vals(3));
+GeoRef.E = double(vals(4));
+GeoRef.C = double(vals(5));
+GeoRef.F = double(vals(6));
+end
+
+
+function [Xmap, Ymap] = piv_grid_to_map_coords_meters(Xm, Ym, GeoRef)
+% FIXED VERSION:
+% Convert calibrated PIVlab coordinates in METRES to projected map coordinates.
+%
+% Assumes:
+%   Xm, Ym are already distances from the upper-left image origin in metres
+%   X increases to the right
+%   Y increases downward
+%
+% GeoRef.C = X coordinate of upper-left pixel center
+% GeoRef.F = Y coordinate of upper-left pixel center
+
+Xmap = double(GeoRef.C) + double(Xm);
+Ymap = double(GeoRef.F) - double(Ym);
+end
+
+
+function export_vectors_shapefile_georef(Post, shp_out_base, scale_factor, prj_file)
+% Export filtered mean vectors as georeferenced line shapefile.
+% Ensures shapewrite receives DOUBLE coordinate arrays.
+
+X = double(Post.Xmap);
+Y = double(Post.Ymap);
+U = double(Post.Umean_f);
+V = double(Post.Vmean_f);
+bad = logical(Post.bad);
+
+SigmaMag = double(Post.SigmaMag);
+SigmaDirDeg = double(Post.SigmaDirDeg);
+Nobs = double(Post.Nobs);
+
+[ny, nx] = size(X);
+
+valid = isfinite(X) & isfinite(Y) & isfinite(U) & isfinite(V) & ~bad;
+nValid = nnz(valid);
+
+if nValid == 0
+    warning("No valid filtered vectors to export.");
+    return;
+end
+
+S(nValid,1) = struct( ...
+    'Geometry', 'Line', ...
+    'BoundingBox', zeros(2,2), ...
+    'X', zeros(1,2), ...
+    'Y', zeros(1,2), ...
+    'ID', 0, ...
+    'Row', 0, ...
+    'Col', 0, ...
+    'U', 0, ...
+    'V', 0, ...
+    'Mag', 0, ...
+    'DirDeg', 0, ...
+    'SigmaMag', 0, ...
+    'SigmaDirDeg', 0, ...
+    'Nobs', 0 );
+
+n = 0;
+for r = 1:ny
+    for c = 1:nx
+        if ~valid(r,c)
+            continue;
+        end
+
+        n = n + 1;
+
+        x0 = double(X(r,c));
+        y0 = double(Y(r,c));
+
+        u = double(U(r,c));
+        v = double(V(r,c));
+
+        x1 = double(x0 + u * scale_factor);
+        y1 = double(y0 + v * scale_factor);
+
+        S(n).Geometry = 'Line';
+        S(n).BoundingBox = double([min(x0,x1) min(y0,y1); max(x0,x1) max(y0,y1)]);
+        S(n).X = double([x0 x1]);
+        S(n).Y = double([y0 y1]);
+
+        S(n).ID = double(n);
+        S(n).Row = double(r);
+        S(n).Col = double(c);
+        S(n).U = double(u);
+        S(n).V = double(v);
+        S(n).Mag = double(hypot(u, v));
+        S(n).DirDeg = double(atan2d(v, u));
+        S(n).SigmaMag = double(SigmaMag(r,c));
+        S(n).SigmaDirDeg = double(SigmaDirDeg(r,c));
+        S(n).Nobs = double(Nobs(r,c));
+    end
+end
+
+S = S(1:n);
+
+shapewrite(S, shp_out_base);
+
+if exist(prj_file, 'file')
+    copyfile(prj_file, shp_out_base + ".prj");
+else
+    warning("Projection file not found; shapefile written without copied .prj: %s", prj_file);
+end
+end
