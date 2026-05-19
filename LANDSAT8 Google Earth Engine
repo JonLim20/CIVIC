@@ -1,3 +1,5 @@
+
+// See https://uageos.maps.arcgis.com/home/group.html?id=e0ce8714edb74442912f370d2a776959#overview for full instructions and project details
 // Paste into Google Earth Engine to download LANDSAT8 Imagery
 // QA_PIXEL band (CFMask) to mask unwanted pixels.
 
