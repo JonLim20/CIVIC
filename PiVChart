@@ -1,0 +1,382 @@
+# ============================================================
+# Folder-based PIV channel-migration heatmap
+# ============================================================
+# This script:
+#   1. Reads all CSV files in a folder
+#   2. Extracts the year interval from each filename
+#      e.g. a1999_2000.csv -> 1999–2000
+#           a2014_2025_fixed.csv -> 2014–2025
+#   3. Combines all raw PIV vector rows into one long CSV
+#   4. Calculates average Mag by year interval and kmfrommout sector
+#   5. Saves a pivoted heatmap table
+#   6. Creates a heatmap where:
+#        x-axis = distance upstream from mouth, km
+#        y-axis = year interval, latest at top
+#        colour = average PIV-derived Mag, m/year
+#        no-data cells = light blue
+# ============================================================
+
+import re
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+
+
+# ============================================================
+# SECTION 1 — User settings
+# ============================================================
+
+# Folder containing your raw PIV vector CSVs
+input_folder = r"C:\Users\jon20\Desktop\PIVcharts"
+
+# Output folder.
+# Use None to save outputs into the same folder as the input CSVs.
+output_folder = None
+
+# Field names in the raw PIV vector CSVs
+mag_field = "Mag"
+distance_field = "kmfrommout"
+
+# Heatmap colour settings
+colour_map = "jet"
+vmin = 0
+vmax = 40
+
+# Colour for sectors/years with no data
+no_data_colour = "lightblue"
+
+# Figure size
+figure_width = 14
+figure_height = 6
+
+# Maximum number of x-axis tick labels
+max_x_ticks = 12
+
+# Whether to include interval start year in each interval row.
+# False is recommended to avoid duplicate years when intervals touch:
+#   1999–2000 -> 2000
+#   2000–2001 -> 2001
+#   2002–2006 -> 2003, 2004, 2005, 2006
+#
+# This option only matters if expand_intervals_to_annual_rows = True.
+include_interval_start_year = False
+
+# If True, year intervals are expanded into annual rows.
+# Example:
+#   2002–2006 becomes rows for 2003, 2004, 2005, 2006
+#
+# If False, each filename interval remains as one row:
+#   2002–2006
+expand_intervals_to_annual_rows = False
+
+
+# ============================================================
+# SECTION 2 — Resolve paths
+# ============================================================
+
+input_folder = Path(input_folder)
+
+if output_folder is None:
+    output_folder = input_folder
+else:
+    output_folder = Path(output_folder)
+
+output_folder.mkdir(parents=True, exist_ok=True)
+
+combined_csv = output_folder / "combined_piv_vectors_from_folder.csv"
+pivot_csv = output_folder / "piv_average_mag_by_km_year_from_folder.csv"
+heatmap_png = output_folder / "piv_channel_migration_heatmap_from_folder.png"
+
+
+# ============================================================
+# SECTION 3 — Helper functions
+# ============================================================
+
+def extract_years_from_filename(path):
+    """
+    Extract start and end year from a CSV filename.
+
+    Examples
+    --------
+    a1999_2000.csv        -> 1999, 2000
+    a2014_2025_fixed.csv  -> 2014, 2025
+    PIV_2008-2014.csv     -> 2008, 2014
+    """
+
+    years = re.findall(r"\d{4}", path.stem)
+
+    if len(years) < 2:
+        raise ValueError(
+            f"Could not find two 4-digit years in filename: {path.name}. "
+            "Rename the file so it contains something like 2002_2006."
+        )
+
+    start_year = int(years[0])
+    end_year = int(years[1])
+
+    if end_year < start_year:
+        start_year, end_year = end_year, start_year
+
+    return start_year, end_year
+
+
+def make_interval_label(start_year, end_year):
+    """Create a clean interval label."""
+    return f"{start_year}–{end_year}"
+
+
+def interval_to_years(start_year, end_year, include_start=False):
+    """
+    Convert an interval to annual rows.
+
+    If include_start=False:
+        2002–2006 -> 2003, 2004, 2005, 2006
+
+    If include_start=True:
+        2002–2006 -> 2002, 2003, 2004, 2005, 2006
+    """
+
+    first_year = start_year if include_start else start_year + 1
+    return list(range(first_year, end_year + 1))
+
+
+# ============================================================
+# SECTION 4 — Read and combine all CSVs in the folder
+# ============================================================
+
+csv_files = sorted(input_folder.glob("*.csv"))
+
+# Avoid accidentally re-reading outputs from a previous run
+csv_files = [
+    p for p in csv_files
+    if p.name not in {
+        combined_csv.name,
+        pivot_csv.name,
+        "combined_piv_vectors_mag_classes.csv",
+        "piv_mag_class_summary.csv",
+    }
+]
+
+if not csv_files:
+    raise FileNotFoundError(f"No CSV files found in: {input_folder}")
+
+combined_tables = []
+
+for csv_file in csv_files:
+    start_year, end_year = extract_years_from_filename(csv_file)
+    interval_label = make_interval_label(start_year, end_year)
+
+    temp = pd.read_csv(csv_file)
+
+    if mag_field not in temp.columns:
+        raise ValueError(
+            f"Field '{mag_field}' was not found in {csv_file.name}. "
+            f"Available fields are: {list(temp.columns)}"
+        )
+
+    if distance_field not in temp.columns:
+        raise ValueError(
+            f"Field '{distance_field}' was not found in {csv_file.name}. "
+            f"Available fields are: {list(temp.columns)}"
+        )
+
+    temp.insert(0, "SourceFile", csv_file.name)
+    temp.insert(1, "YearInterval", interval_label)
+    temp.insert(2, "StartYear", start_year)
+    temp.insert(3, "EndYear", end_year)
+
+    combined_tables.append(temp)
+
+combined = pd.concat(combined_tables, ignore_index=True)
+
+# Ensure numeric analysis fields
+combined[mag_field] = pd.to_numeric(combined[mag_field], errors="coerce")
+combined[distance_field] = pd.to_numeric(combined[distance_field], errors="coerce")
+
+# Remove rows that cannot be used in the heatmap
+valid = combined.dropna(subset=[mag_field, distance_field]).copy()
+
+if valid.empty:
+    raise ValueError(
+        f"No valid rows found after checking '{mag_field}' and '{distance_field}'."
+    )
+
+# Save combined raw table
+combined.to_csv(combined_csv, index=False)
+
+
+# ============================================================
+# SECTION 5 — Aggregate Mag by year interval and distance sector
+# ============================================================
+
+if expand_intervals_to_annual_rows:
+    annual_tables = []
+
+    for _, row in (
+        valid[["StartYear", "EndYear", "YearInterval"]]
+        .drop_duplicates()
+        .iterrows()
+    ):
+        start_year = int(row["StartYear"])
+        end_year = int(row["EndYear"])
+        interval_label = row["YearInterval"]
+
+        years = interval_to_years(
+            start_year,
+            end_year,
+            include_start=include_interval_start_year
+        )
+
+        interval_data = valid[valid["YearInterval"] == interval_label].copy()
+
+        for year in years:
+            temp = interval_data.copy()
+            temp["PlotYear"] = year
+            annual_tables.append(temp)
+
+    plot_source = pd.concat(annual_tables, ignore_index=True)
+    row_field = "PlotYear"
+
+else:
+    plot_source = valid.copy()
+    row_field = "YearInterval"
+
+
+grouped = (
+    plot_source
+    .groupby([row_field, distance_field], as_index=False)[mag_field]
+    .mean()
+    .rename(columns={mag_field: "AverageMag_m_per_year"})
+)
+
+pivot = grouped.pivot(
+    index=row_field,
+    columns=distance_field,
+    values="AverageMag_m_per_year"
+)
+
+
+# ============================================================
+# SECTION 6 — Sort heatmap rows and columns
+# ============================================================
+
+# Sort distance upstream from mouth left-to-right
+pivot = pivot.reindex(sorted(pivot.columns), axis=1)
+
+# Sort years/intervals descending, latest at top
+if expand_intervals_to_annual_rows:
+    pivot = pivot.sort_index(ascending=False)
+else:
+    def interval_sort_key(label):
+        years = re.findall(r"\d{4}", str(label))
+        if len(years) >= 2:
+            start_year = int(years[0])
+            end_year = int(years[1])
+        elif len(years) == 1:
+            start_year = int(years[0])
+            end_year = int(years[0])
+        else:
+            start_year = -9999
+            end_year = -9999
+
+        return end_year, start_year
+
+    sorted_rows = sorted(pivot.index, key=interval_sort_key, reverse=True)
+    pivot = pivot.loc[sorted_rows]
+
+
+# Save pivoted heatmap table
+pivot.to_csv(pivot_csv)
+
+
+# ============================================================
+# SECTION 7 — Create heatmap
+# ============================================================
+
+plt.close("all")
+
+fig, ax = plt.subplots(figsize=(figure_width, figure_height))
+
+# Copy the colormap so we can safely change the no-data colour
+cmap = mpl.colormaps[colour_map].copy()
+cmap.set_bad(color=no_data_colour)
+
+plot_values = np.ma.masked_invalid(pivot.to_numpy(dtype=float))
+
+cax = ax.imshow(
+    plot_values,
+    aspect="auto",
+    cmap=cmap,
+    origin="upper",
+    interpolation="nearest",
+    vmin=vmin,
+    vmax=vmax
+)
+
+
+# ============================================================
+# SECTION 8 — Axis labels and ticks
+# ============================================================
+
+distances_km = pivot.columns.to_numpy(dtype=float)
+row_labels = [str(x) for x in pivot.index]
+
+# X-axis: distance upstream from mouth
+x_positions = np.arange(len(distances_km))
+
+if len(x_positions) > max_x_ticks:
+    x_tick_idx = np.linspace(0, len(x_positions) - 1, max_x_ticks, dtype=int)
+else:
+    x_tick_idx = x_positions
+
+ax.set_xticks(x_tick_idx)
+ax.set_xticklabels(
+    [f"{distances_km[i]:g}" for i in x_tick_idx],
+    rotation=45,
+    ha="right"
+)
+
+ax.set_xlabel("Distance upstream from mouth (km)")
+
+# Y-axis: years or intervals
+ax.set_yticks(np.arange(len(row_labels)))
+ax.set_yticklabels(row_labels)
+
+if expand_intervals_to_annual_rows:
+    ax.set_ylabel("Year")
+else:
+    ax.set_ylabel("Year interval")
+
+ax.set_title("PIV-derived average channel migration rate by river sector")
+
+
+# ============================================================
+# SECTION 9 — Colorbar and export
+# ============================================================
+
+cbar = fig.colorbar(cax, ax=ax)
+cbar.set_label("Average migration-rate magnitude, Mag (m/year)")
+
+plt.tight_layout()
+plt.savefig(heatmap_png, dpi=300, bbox_inches="tight")
+plt.show()
+
+
+# ============================================================
+# SECTION 10 — Print summary
+# ============================================================
+
+print("Processed CSV files:")
+for p in csv_files:
+    print(f"  - {p.name}")
+
+print()
+print(f"Saved combined raw table: {combined_csv}")
+print(f"Saved pivot heatmap table: {pivot_csv}")
+print(f"Saved heatmap: {heatmap_png}")
+print()
+print(f"No-data cells plotted as: {no_data_colour}")
+print(f"Colour ramp clipped from {vmin} to {vmax} m/year")
