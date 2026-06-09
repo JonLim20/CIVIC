@@ -6,6 +6,9 @@ In order to generate detailed pixel-by-pixel information on change over time, we
 
 1. ESRI ArcGIS Pro
 2. Anaconda
+3. An internet connection and browser of choice
+
+**STEP 1: Generate and Download New Yearly Composite**
 
 
 **STEP 2: Binary Thresholding Workflow**
