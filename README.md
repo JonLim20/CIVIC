@@ -9,7 +9,7 @@ In order to generate detailed pixel-by-pixel information on change over time, we
 3. An internet connection and browser of choice
 
 **STEP 1: Generate and Download New Yearly Composite**
-1. Create a Google Earth Engine account and paste the following script into the analysis window 
+1. Create a Google Earth Engine account and paste the following script into the analysis window https://github.com/JonLim20/CIVIC/blob/4ffc068e22a20070730105e65aa133259a7afd39/LANDSAT8%20Google%20Earth%20Engine
 
 **STEP 2: Binary Thresholding Workflow**
 
