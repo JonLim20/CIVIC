@@ -1,7 +1,9 @@
 **PIV for Alaskan River Change Workflow**
+
 In order to generate detailed pixel-by-pixel information on change over time, we use Chadwick et al’s (2022) technique for mapping and analyzing river migration, which utilizes a process called Particle Image Velocimetry (PIV) to indicate channel change over time. It reduces temporal pairs of images into vectors indicating direction and rate of change. This implementation is intended for to annually update the existing PIV dataset of the Kanektok River, but can conceivably be used for an entirely different river.
 
 **Required Software**
+
 1. ESRI ArcGIS Pro
 2. Anaconda
 
