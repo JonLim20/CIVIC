@@ -53,3 +53,22 @@ This is the workflow for creating river planform binary rasters in ArcGIS Pro. I
 [^2]:  https://pro.arcgis.com/en/pro-app/latest/tool-reference/data-management/create-fishnet.htm
 
 [^3]:  https://pro.arcgis.com/en/pro-app/3.4/tool-reference/data-management/dissolve.htm
+
+**Step 3: Clipping the products**
+
+9.	Generate a study area and then export it to a folder as a shapefile (ie. Not within a geodatabase). Take care to save the .prj and .tfw for use in Step 5
+10.	 Clip the geometry using the script provided, to reduce the amount of area being analyzed
+**Step 4: PIV**
+
+12.	Using the settings outlined in Chadwick et al (2023), carry out PIV on pairs of years for each visualization (ie. 8 realizations per pair)
+i.	Interrogation area pass 1 = size of widest channel in pixels. For Kanektok, 32 pixels, step 16
+ii.	Pass 2 and pass 3 half of each other. For Landsat, 16 and 8pixels.
+iii.	Correllation robustness= extreme
+
+**Step 5: Matlab**
+
+12.	Create an account in Matlab Online, and paste the provided script there, in order to process the realizations.
+13.	Create a folder in Matlab Online, and upload the realizations by pasting it into the folder
+14.	Modify the settings as needed in the script and run the realizations, including the .prj and .tfw files produced in Step 3
+15.	This outputs the results as vector confidence graphs and the vectors themselves as shapefiles, embedded with magnitude of movement over time
+7
